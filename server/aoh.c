@@ -12,307 +12,90 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <time.h>
-#include <wiringPi.h>
 
+#include "adc.h"
+#include "spi.h"
 #include "cbuf.h"
 #include "socket.h"
-
-
-int spi_cs0_fd;				//file descriptor for the SPI device
-int spi_cs1_fd;				//file descriptor for the SPI device
-unsigned char spi_mode;
-unsigned char spi_bitsPerWord;
-unsigned int spi_speed;
+#include "gpio.h"
+#include "setting.h"
 
 
 
 
-//***********************************
-//***********************************
-//********** SPI OPEN PORT **********
-//***********************************
-//***********************************
-//spi_device	0=CS0, 1=CS1
-int SpiOpenPort (int spi_device)
-{
-	int status_value = -1;
-    int *spi_cs_fd;
 
-
-    //----- SET SPI MODE -----
-    //SPI_MODE_0 (0,0) 	CPOL = 0, CPHA = 0, Clock idle low, data is clocked in on rising edge, output data (change) on falling edge
-    //SPI_MODE_1 (0,1) 	CPOL = 0, CPHA = 1, Clock idle low, data is clocked in on falling edge, output data (change) on rising edge
-    //SPI_MODE_2 (1,0) 	CPOL = 1, CPHA = 0, Clock idle high, data is clocked in on falling edge, output data (change) on rising edge
-    //SPI_MODE_3 (1,1) 	CPOL = 1, CPHA = 1, Clock idle high, data is clocked in on rising, edge output data (change) on falling edge
-    spi_mode = SPI_MODE_3;
-    
-    //----- SET BITS PER WORD -----
-    spi_bitsPerWord = 8;
-    
-    //----- SET SPI BUS SPEED -----
-    spi_speed = 40000000;		//40000000 = 40MHz (1uS per bit) 
-
-
-    if (spi_device)
-    	spi_cs_fd = &spi_cs1_fd;
-    else
-    	spi_cs_fd = &spi_cs0_fd;
-
-
-    if (spi_device)
-    	*spi_cs_fd = open("/dev/spidev0.1", O_RDWR);
-    else
-    	*spi_cs_fd = open("/dev/spidev0.0", O_RDWR);
-
-    if (*spi_cs_fd < 0)
-    {
-        perror("Error - Could not open SPI device");
-        exit(1);
-    }
-
-    status_value = ioctl(*spi_cs_fd, SPI_IOC_WR_MODE, &spi_mode);
-    if(status_value < 0)
-    {
-        perror("Could not set SPIMode (WR)...ioctl fail");
-        exit(1);
-    }
-
-    status_value = ioctl(*spi_cs_fd, SPI_IOC_RD_MODE, &spi_mode);
-    if(status_value < 0)
-    {
-      perror("Could not set SPIMode (RD)...ioctl fail");
-      exit(1);
-    }
-
-    status_value = ioctl(*spi_cs_fd, SPI_IOC_WR_BITS_PER_WORD, &spi_bitsPerWord);
-    if(status_value < 0)
-    {
-      perror("Could not set SPI bitsPerWord (WR)...ioctl fail");
-      exit(1);
-    }
-
-    status_value = ioctl(*spi_cs_fd, SPI_IOC_RD_BITS_PER_WORD, &spi_bitsPerWord);
-    if(status_value < 0)
-    {
-      perror("Could not set SPI bitsPerWord(RD)...ioctl fail");
-      exit(1);
-    }
-
-    status_value = ioctl(*spi_cs_fd, SPI_IOC_WR_MAX_SPEED_HZ, &spi_speed);
-    if(status_value < 0)
-    {
-      perror("Could not set SPI speed (WR)...ioctl fail");
-      exit(1);
-    }
-
-    status_value = ioctl(*spi_cs_fd, SPI_IOC_RD_MAX_SPEED_HZ, &spi_speed);
-    if(status_value < 0)
-    {
-      perror("Could not set SPI speed (RD)...ioctl fail");
-      exit(1);
-    }
-    return(status_value);
-}
-
-
-
-//************************************
-//************************************
-//********** SPI CLOSE PORT **********
-//************************************
-//************************************
-int SpiClosePort (int spi_device)
-{
-	int status_value = -1;
-    int *spi_cs_fd;
-
-    if (spi_device)
-    	spi_cs_fd = &spi_cs1_fd;
-    else
-    	spi_cs_fd = &spi_cs0_fd;
-
-
-    status_value = close(*spi_cs_fd);
-    if(status_value < 0)
-    {
-    	perror("Error - Could not close SPI device");
-    	exit(1);
-    }
-    return(status_value);
-}
-
-
-
-//*******************************************
-//*******************************************
-//********** SPI WRITE & READ DATA **********
-//*******************************************
-//*******************************************
-//SpiDevice		0 or 1
-//TxData and RxData can be the same buffer (read of each byte occurs before write)
-//Length		Max 511 (a C SPI limitation it seems)
-//LeaveCsLow	1=Do not return CS high at end of transfer (you will be making a further call to transfer more data), 0=Set CS high when done
-int SpiWriteAndRead (int SpiDevice, unsigned char *TxData, unsigned char *RxData, int Length, int LeaveCsLow)
-{
-	struct spi_ioc_transfer spi;
-	int i = 0;
-	int retVal = -1;
-	int spi_cs_fd;
-
-	if (SpiDevice)
-		spi_cs_fd = spi_cs1_fd;
-	else
-		spi_cs_fd = spi_cs0_fd;
-
-	spi.tx_buf = (unsigned long)TxData;		//transmit from "data"
-	spi.rx_buf = (unsigned long)RxData;		//receive into "data"
-	spi.len = Length;
-	spi.delay_usecs = 0;
-	spi.speed_hz = spi_speed;
-	spi.bits_per_word = spi_bitsPerWord;
-	spi.cs_change = LeaveCsLow;						//0=Set CS high after a transfer, 1=leave CS set low
-
-	retVal = ioctl(spi_cs_fd, SPI_IOC_MESSAGE(1), &spi);
-
-	if(retVal < 0)
-	{
-		perror("Error - Problem transmitting spi data..ioctl");
-		exit(1);
-	}
-
-	return retVal;
-}
-
-
-
-int adc7380_write_reg(uint8_t reg_addr, uint16_t reg_val){
-    
-    struct spi_ioc_transfer spi;
-    int spi_cs_fd;
-
-    unsigned char TxData[2];
-    unsigned char RxData[2];
-    int retVal;
-
-    spi_cs_fd = spi_cs0_fd;
-
-    spi.tx_buf = (unsigned long)TxData;		//transmit from "data"
-	spi.rx_buf = (unsigned long)RxData;		//receive into "data"
-	spi.len = 2;
-	spi.delay_usecs = 0;
-	spi.speed_hz = spi_speed;
-	spi.bits_per_word = 8;
-	spi.cs_change = 0;						//0=Set CS high after a transfer, 1=leave CS set low
-
-    //if(self.__if_spi()) :
-    //    data_send = [(((reg_addr | 0x08) << 4) | (reg_val >> 8)) , (reg_val & 0x00FF)]
-    TxData[0] = (((reg_addr | 0x08) << 4) | (reg_val >> 8));
-    TxData[1] = (reg_val & 0x00ff);
-
-    printf("Write 0x%02X, 0x%02X\n",TxData[0], TxData[1]);
-    retVal = ioctl(spi_cs_fd, SPI_IOC_MESSAGE(1), &spi);
-    //    self.Spi.writebytes(data_send)
-    //    return 0
-    //else:
-        return retVal;
-}
-
-int adc7380_read_reg(uint8_t reg_addr, unsigned char *reg_val){
-    
-    struct spi_ioc_transfer spi;
-    int spi_cs_fd;
-
-    unsigned char TxData[2];
-    unsigned char RxData[2];
-    int retVal;
-
-    spi_cs_fd = spi_cs0_fd;
-
-    spi.tx_buf = (unsigned long)TxData;		//transmit from "data"
-	spi.rx_buf = (unsigned long)RxData;		//receive into "data"
-	spi.len = 2;
-	spi.delay_usecs = 0;
-	spi.speed_hz = spi_speed;
-	spi.bits_per_word = 8;
-	spi.cs_change = 0;						//0=Set CS high after a transfer, 1=leave CS set low
-
-    //if(self.__if_spi()) :
-    //    data_send = [(((reg_addr | 0x08) << 4) | (reg_val >> 8)) , (reg_val & 0x00FF)]
-    //TxData[0] = (((reg_addr & 0x07) << 4) | (*reg_val >> 8));
-    //TxData[0] = ((reg_addr & 0x07) << 4) | (*reg_val));
-    TxData[0] = ((reg_addr & 0x07) << 4);
-    TxData[1] = 0;
-    //TxData[1] = *(reg_val+1);
-
-    retVal = ioctl(spi_cs_fd, SPI_IOC_MESSAGE(1), &spi);
-
-    TxData[0] = 0;
-    TxData[1] = 0;
-
-    retVal = ioctl(spi_cs_fd, SPI_IOC_MESSAGE(1), &spi);
-    *(reg_val) = RxData[0];
-    *(reg_val+1) = RxData[1];
-
-    //    self.Spi.writebytes(data_send)
-    //    return 0
-    //else:
-    return retVal;
-}
-
-
-
-struct spi_ioc_transfer spi;
 int spi_fd;
-unsigned char RxData[8];
-unsigned char TxData[8];
-
-void spi_config(){
-
-    //unsigned char TxData[2];
-    //unsigned char RxData[2];
-    //int retVal;
-
-    spi_fd = spi_cs0_fd;
-
-    spi.tx_buf = (unsigned long)TxData;		//transmit from "data"
-	spi.rx_buf = (unsigned long)RxData;		//receive into "data"
-	spi.len = 4;                // 2 wire mode
-	spi.delay_usecs = 0;
-	spi.speed_hz = spi_speed;
-	spi.bits_per_word = 8;
-	spi.cs_change = 0;						//0=Set CS high after a transfer, 1=leave CS set low
-}
-
-int adc7380_read_adc(){
-    int retVal;
+struct spi_ioc_transfer spi;
 
 
-    retVal = ioctl(spi_fd, SPI_IOC_MESSAGE(1), &spi);
-    
-    //    self.Spi.writebytes(data_send)
-    //    return 0
-    //else:
-
-    
+unsigned char RxData[10];
+unsigned char TxData[10];
 
 
-    return retVal;
-}
-
-int timer_flag = 0;
-
-static void *timer(void *arg){
-    while(1){
-        usleep(10);
-        timer_flag = 1;
-    }
-}
+struct timespec res1;
+struct timespec res2;
 
 
+BUFF_TYPE adc_buff[BUFF_SIZE];
+unsigned long trig_pos;
 //uint32_t sample_count = 0;
 int read_flag = 0;
 int trig_flag = 0;
 int done_flag = 0;
+//uint alarm_flag = 0;
+uint32_t alert_flag = 0;
+
+
+
+
+
+// Function Prototype //
+void setup_gpio();
+void setup_adc();
+void setup_spi();
+
+
+
+int adc7380_write_reg(uint8_t reg_addr, uint16_t reg_val){
+    int retval;
+
+    spi.len = ADC_REG_LEN;
+
+    TxData[0] = (((reg_addr | 0x08) << 4) | (reg_val >> 8));
+    TxData[1] = (reg_val & 0x00ff);
+    retval = ioctl(spi_fd, SPI_IOC_MESSAGE(1), &spi);
+    
+    spi.len = ADC_DATA_LEN;
+    return retval;
+}
+
+int adc7380_read_reg(uint8_t reg_addr)//, unsigned char *reg_val){
+{
+    int retval;
+
+    //printf("txbuf = %d\n", spi.tx_buf);
+    spi.len = ADC_REG_LEN;
+    TxData[0] = ((reg_addr & 0x07) << 4);
+    TxData[1] = 0;
+    retval = ioctl(spi_fd, SPI_IOC_MESSAGE(1), &spi);
+
+    TxData[0] = 0;
+    TxData[1] = 0;
+    retval = ioctl(spi_fd, SPI_IOC_MESSAGE(1), &spi);
+    //printf("txbuf = %d\n", spi.tx_buf);
+    spi.len = ADC_DATA_LEN;
+    return retval;
+}
+
+
+static inline void adc7380_read_adc(){
+    //int retVal;
+    ioctl(spi_fd, SPI_IOC_MESSAGE(1), &spi);
+    //return retVal;
+}
+
+
+
 
 static void *read_adc(void *arg){
     uint32_t sample_count = 0;
@@ -320,7 +103,7 @@ static void *read_adc(void *arg){
     while(!read_flag);      // Wait until read_flag is set to start reading
     while(read_flag){
         adc7380_read_adc();
-        printf("%d\n",(RxData[0] << 8) | RxData[1]);
+        printf("%04X : vol = %f V\n",(RxData[0] << 8) | RxData[1], ((RxData[0] << 8) | RxData[1])*2*3.3/65536);
         cbuf_add((RxData[0] << 8) | RxData[1]);
         if(trig_flag){
             sample_count++;
@@ -352,12 +135,6 @@ static void *wait_for_alarm(void *arg){
     printf("Thread read adc exited\n");
 }
 
-struct timespec res1;
-struct timespec res2;
-
-
-BUFF_TYPE adc_buff[BUFF_SIZE];
-unsigned long trig_pos;
 
 
 int main(){
@@ -387,12 +164,16 @@ int main(){
 
 
     // Setup SPI port
-    SpiOpenPort(0);
-    spi_config();
     // Initialize circular buffer
+    setup_spi();
+    setup_gpio();
     cbuf_init();
+    setup_adc();
 
-    goto TEST;
+//    goto TEST;
+
+
+
 
     while(1){
         //scanf("%s", &keyin);
@@ -404,6 +185,7 @@ int main(){
         read_flag = 0;
         trig_flag = 0;
         done_flag = 0;
+        alert_flag = 0;
 
         // Create ADC read thread
         pthread_create(&th_readadc, NULL, read_adc, NULL);
@@ -414,12 +196,23 @@ int main(){
         printf("After 1s, start reading\n");
         read_flag = 1;
 
-        sleep(5);
-        printf("After 5s, simulate trig signal\n");
+        //while(1);
+        //sleep(5);
+        //printf("After 5s, simulate trig signal\n");
+        //trig_flag = 1;
+        do{            
+            alert_flag = (gpio_read(ADC_ALARM_GPIO_IN));
+            //printf("alert = %d\n",alert_flag);
+        }while(alert_flag > 0);            
         trig_flag = 1;
+        
 
+        // Wait until done_flag is set.
         while(!done_flag); 
         printf("Done flag is set, done read adc\n");
+        adc7380_read_reg(AD7380_REG_ALERT);
+        printf ("Alert Reg = 0x%02X%02X\n" ,RxData[0], RxData[1]);
+
     }
 
     printf("Exit main program\n");
@@ -439,6 +232,12 @@ int main(){
     
 TEST:
 
+
+
+    while(1){
+        alert_flag = (gpio_read(ADC_ALARM_GPIO_IN));
+        printf("alert = %d\n",alert_flag);
+    }
 
     sock_init();            // Create socket to send data to Python program
     if(socket_wait_client() < 0) {
@@ -471,28 +270,7 @@ TEST:
 
 
     return 0;
-    regval = adc7380_read_reg(0x05, rx_buf);
-    printf ("Configuration 2 Reg = 0x%02X%02X\n" ,rx_buf[0], rx_buf[1]);
-
-    //return 0;
-
-    //regval = adc.read_reg(0x02);
-    //printf ("Configuration 2 Reg = 0x%02X%02X" ,rx_buf[0], rx_buf[1]);
-
-
-    adc7380_write_reg(0x05, 0x0500);         // Set alert to about 2.5V
-    regval = adc7380_read_reg(0x05, rx_buf);
-    printf ("Alert Reg = 0x%02X%02X\n" ,rx_buf[0], rx_buf[1]);
-
-    //return 0;
-
-    adc7380_write_reg(0x01, 0x0008);         // Enable alert function
-    regval = adc7380_read_reg(0x01, rx_buf);
-    printf ("Configuration 1 Reg = 0x%02X%02X\n" ,rx_buf[0], rx_buf[1]);
-
-    adc7380_write_reg(0x02, 0x0100);         // Set 2-Wire output mode, SDOA will output channel A and C, SDOB will outout channel B and D. We connect to only SDOA, so signal in must use channel A and C
-    regval = adc7380_read_reg(0x02, rx_buf);
-    printf ("Configuration 2 Reg = 0x%02X%02X\n" ,rx_buf[0], rx_buf[1]);
+    
 
 
 
@@ -530,4 +308,52 @@ TEST:
  //  printf("Data = %d, %d, %d, %d\n", rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3]);
     SpiClosePort(0);  
     return 0;
+}
+
+
+void setup_gpio()
+{
+    gpio_mem_map();    
+    gpio_set_dir(GPIO_DIR_IN, ADC_ALARM_GPIO_IN);
+
+}
+
+void setup_adc(){
+    uint32_t regval;
+    //char rx_buf[10];
+    printf ("Setup ADC\n");
+    // Reset ADC
+    adc7380_write_reg(AD7380_REG_CONFIG2, 0x00FF);          // Hard reset
+    sleep(1);                                               // Wait 10ms
+    adc7380_write_reg(AD7380_REG_CONFIG2, 0x0000);          // 2-wire output mode
+    regval = adc7380_read_reg(AD7380_REG_CONFIG2);  //, rx_buf);
+    printf ("Configuration 2 Reg = 0x%02X%02X\n" ,RxData[0], RxData[1]);
+    
+    // --- Set Alert function --- //    
+    // Set Alert threshold, Threshold (Vth), set register value = ((Vth * 65536 / (2 * Vref)) >> 4)
+    regval = ((uint32_t)((V_TRIGGER_THRESHOLD * 65536) / (2 * V_REF))) >> 4;
+    printf ("Calaulated threshold value = 0x%04X\n",regval);
+    adc7380_write_reg(AD7380_REG_ALERT_HIGH_THRESHOLD, regval);         // Set alert to about 2.5V
+    regval = adc7380_read_reg(AD7380_REG_ALERT_HIGH_THRESHOLD);         //, rx_buf);
+    printf ("Alert High Reg = 0x%02X%02X\n" ,RxData[0], RxData[1]);
+
+    // Enable Alert function
+    adc7380_write_reg(AD7380_REG_CONFIG1, 0x0008);         // Enable alert function
+    regval = adc7380_read_reg(AD7380_REG_CONFIG1);  //, rx_buf);
+    printf ("Configuration 1 Reg = 0x%02X%02X\n" ,RxData[0], RxData[1]);
+}
+
+void setup_spi(){
+    int retval;
+    printf ("Setup SPI Port\n");
+    retval = spi_open(&spi_fd);
+    
+    spi.tx_buf = (unsigned long)TxData;		//transmit from "data"
+	spi.rx_buf = (unsigned long)RxData;		//receive into "data"
+	spi.len = ADC_DATA_LEN;
+	spi.delay_usecs = 0;
+	spi.speed_hz = SPI_SPEED;
+	spi.bits_per_word = SPI_BIT_PER_WORD;
+	spi.cs_change = 0;						//0=Set CS high after a transfer, 1=leave CS set low
+    
 }

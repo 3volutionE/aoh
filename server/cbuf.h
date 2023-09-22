@@ -2,7 +2,7 @@
 #define __CBUF_H__
 
 
-    #define BUFF_SIZE 20
+    #define BUFF_SIZE 1000
 
     typedef uint32_t BUFF_TYPE;
     //typedef uint8_t BUFF_TYPE;
