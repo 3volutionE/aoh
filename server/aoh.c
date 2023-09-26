@@ -2,10 +2,10 @@
 #include <sys/ioctl.h>			//Needed for SPI port
 #include <linux/spi/spidev.h>	//Needed for SPI port
 #include <unistd.h>			//Needed for SPI port
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-//#include <iostream>
 #include <unistd.h>
 //#include <cstring>
 
@@ -27,23 +27,22 @@
 int spi_fd;
 struct spi_ioc_transfer spi;
 
-
 unsigned char RxData[10];
 unsigned char TxData[10];
 
+char adc_buff[SAMPLE_COUNT * sizeof(sample_t)];
 
-struct timespec res1;
-struct timespec res2;
-
-
-BUFF_TYPE adc_buff[BUFF_SIZE];
 unsigned long trig_pos;
-//uint32_t sample_count = 0;
 int read_flag = 0;
 int trig_flag = 0;
 int done_flag = 0;
-//uint alarm_flag = 0;
 uint32_t alert_flag = 0;
+
+
+struct timespec ts;
+
+struct timespec res1;
+struct timespec res2;
 
 
 
@@ -99,88 +98,59 @@ static inline void adc7380_read_adc(){
 
 static void *read_adc(void *arg){
     uint32_t sample_count = 0;
-    printf("Thread read adc created\n");
+    //uint32_t time = 0x12345678;
+    printf("----- Thread read adc created\n");
+    printf("----- Read until there is a trigger\n");
     while(!read_flag);      // Wait until read_flag is set to start reading
     while(read_flag){
+        // Get time
+        clock_gettime(CLOCK_REALTIME, &ts);
+        // Get data
         adc7380_read_adc();
-        printf("%04X : vol = %f V\n",(RxData[0] << 8) | RxData[1], ((RxData[0] << 8) | RxData[1])*2*3.3/65536);
-        cbuf_add((RxData[0] << 8) | RxData[1]);
+
+        //printf("%d : vol = %f V\n",(RxData[0] << 8) | RxData[1], ((RxData[0] << 8) | RxData[1])*2*3.3/65536);
+        //printf("%d %d %d %d\n",RxData[0], RxData[1], RxData[2] ,RxData[3]);
+        //printf("time %lu\n", ts.tv_nsec);
+        
+        cbuf_add(ts.tv_nsec, (RxData[0] << 8) | RxData[1], (RxData[2] << 8) | RxData[3] );
+        //cbuf_add(time, (RxData[0] << 8) | RxData[1], (RxData[2] << 8) | RxData[3] );
+
         if(trig_flag){
             sample_count++;
-            if(sample_count == 5000){
+            if(sample_count >= (SAMPLE_COUNT >> 1)){   // equiv to : BUFF_SIZE / 2
                 done_flag = 1;
                 break;
             }
         }
     }
-    printf("Thread read adc exited\n");
+    printf("----- Thread read adc exited\n");
 }
-
-static void *wait_for_alarm(void *arg){
-    uint32_t sample_count = 0;
-    printf("Thread read adc created\n");
-    while(!read_flag);      // Wait until read_flag is set to start reading
-    while(read_flag){
-        adc7380_read_adc();
-        printf("%d\n",(RxData[0] << 8) | RxData[1]);
-        cbuf_add((RxData[0] << 8) | RxData[1]);
-        if(trig_flag){
-            sample_count++;
-            if(sample_count == 5000){
-                done_flag = 1;
-                break;
-            }
-        }
-    }
-    printf("Thread read adc exited\n");
-}
-
-
 
 int main(){
-    int i;
-    long t_next;
-    long l1, l2;
-    uint16_t regval;
-    unsigned char tx_buf[100];
-    unsigned char rx_buf[100];
 
-    pthread_t th_timer;
     pthread_t th_readadc;
+    char sock_buff[100];
+    printf("******************************\n");
+    printf("***    ADC INTERFACE APP   ***\n");
+    printf("******************************\n");
 
-
-    int inp;
-    char keyin[100];
-    char cin;
-
-    //cbuf_set_pos(5);
-
-    //for (i=1; i<=20; i++)
-    //    cbuf_add(i);
-
-    //cbuf_print_all();
-
-    //return 0;
-
-
-    // Setup SPI port
-    // Initialize circular buffer
+    // Initial hardware
+    printf("-- Initialize Hardware --\n");
     setup_spi();
     setup_gpio();
     cbuf_init();
     setup_adc();
-
-//    goto TEST;
-
-
-
-
-    while(1){
-        //scanf("%s", &keyin);
-        printf("Press <enter> to start capture\n");
-        cin = getchar();
-        if(cin == 'e') break;
+    sock_init();            // Create socket to send data to Python program
+    printf("-- Done Initialize Hardware --\n");
+    
+    while(1){ 
         
+        // Wait until receive the capture command
+        printf("-- Wait for incoming capture command --\n");
+        while(socket_receive(sock_buff) < 0);
+        printf("--- Received Command = %s\n", sock_buff);
+        if(strcmp((const char *)sock_buff, "capture") != 0) continue;
+
         // Reset flag
         read_flag = 0;
         trig_flag = 0;
@@ -188,164 +158,92 @@ int main(){
         alert_flag = 0;
 
         // Create ADC read thread
+        printf("--- Create thread to read data from ADC\n");
         pthread_create(&th_readadc, NULL, read_adc, NULL);
-    
-
-        // Following is the temp code for testing.
-        sleep(1);
-        printf("After 1s, start reading\n");
         read_flag = 1;
 
-        //while(1);
-        //sleep(5);
-        //printf("After 5s, simulate trig signal\n");
-        //trig_flag = 1;
+        // Wait until there is an alert signal, then assert trig_flag        
         do{            
             alert_flag = (gpio_read(ADC_ALARM_GPIO_IN));
-            //printf("alert = %d\n",alert_flag);
-        }while(alert_flag > 0);            
+        }while(alert_flag > 0);
         trig_flag = 1;
-        
 
-        // Wait until done_flag is set.
+        // Wait until done_flag is set
         while(!done_flag); 
-        printf("Done flag is set, done read adc\n");
+        printf("--- Done flag is set, done read adc\n");
         adc7380_read_reg(AD7380_REG_ALERT);
-        printf ("Alert Reg = 0x%02X%02X\n" ,RxData[0], RxData[1]);
+        printf ("--- Alert Reg = 0x%02X%02X\n" ,RxData[0], RxData[1]);
 
+        // Copy data from circular buffer to ADC buffer
+        printf("--- Copy data to buffer\n");
+        trig_pos = cbuf_get_pos();   
+        cbuf_copy(adc_buff, trig_pos);
+        //printf("Send result to PY with %d bytes\n",BUFF_SIZE * sizeof(adc_buff));        
+        
+        /*
+        for(int i=0; i<100; i++){
+            printf("Data [%d] : ", i);
+            for(int j=0; j<8; j++){
+                printf("%x", *(adc_buff+(i*8)+j));
+            }
+            printf("\n");
+        }
+        */
+        // Send adc data to client
+        socket_send((unsigned char*)adc_buff, sizeof(adc_buff));
     }
-
+    
+    SpiClosePort(0);
     printf("Exit main program\n");
     return 0;
-
-    // Setup
-    //adc7380_write_reg(0x02, 0x00FF);         // Hard reset ADC
-    //time.sleep(1)                       // Wait 2 second for the reset process
     
-    //adc7380_write_reg(0x02, 0x0100);         // Set 2-Wire output mode, SDOA will output channel A and C, SDOB will outout channel B and D. We connect to only SDOA, so signal in must use channel A and C
-    //time.sleep(1)                       // Wait 2 second for the reset process
-    
-    
+    // Trap state
     while(1);
-    return 0;
-
-    
-TEST:
-
-
-
-    while(1){
-        alert_flag = (gpio_read(ADC_ALARM_GPIO_IN));
-        printf("alert = %d\n",alert_flag);
-    }
-
-    sock_init();            // Create socket to send data to Python program
-    if(socket_wait_client() < 0) {
-        // Error, abort program
-    }
-
-
-    printf("Socket Create\n");
-
-
-
-
-    cbuf_set_pos(5);
-    for (i=1; i<=100; i++)
-        cbuf_add(i);
-
-
-    cbuf_print_all();
-   
-    trig_pos = 0;
-    cbuf_copy(adc_buff, trig_pos);
-    
-    for (i=0; i<BUFF_SIZE; i++){
-        printf("%d\n",*(adc_buff+i));
-    }
-
-    return 0;
-
-
-
-
-    return 0;
-    
-
-
-
-    
-        
-    //pthread_create(&th_timer, NULL, timer, NULL);
-    
-    while(1){
-        //cbuf_print_all();
-        usleep(1000);
-    }
-    
-    return 0;
-    clock_gettime(CLOCK_REALTIME,&res1);
-    clock_gettime(CLOCK_REALTIME,&res2);
-    
-    printf("Difference: %lu\n", res2.tv_nsec - res1.tv_nsec);
-    while(1){
-        clock_gettime(CLOCK_REALTIME,&res1);
-        //printf("%lu\n", res1.tv_nsec);
-        t_next = res1.tv_nsec + 1000;
-        //usleep(1000);
-        adc7380_read_adc();
-        do {
-            clock_gettime(CLOCK_REALTIME,&res2);
-            //printf("%lu, %lu, %lu\n", res1.tv_nsec, t_next, res2.tv_nsec);
-        }
-        //while(res2.tv_nsec - res1.tv_nsec < 1000);
-        //while(res2.tv_nsec < t_next);
-        while( (res2.tv_nsec < res1.tv_nsec ? res2.tv_nsec + 1000000000 : res2.tv_nsec) - res1.tv_nsec < 1000);
-            //res1.tv_nsec + 1000 > res2.tv_nsec);
-    }
-
-//    SpiWriteAndRead(0, tx_buf, rx_buf, 4, 0);
- //  printf("Data = %d, %d, %d, %d\n", rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3]);
-    SpiClosePort(0);  
-    return 0;
 }
 
 
 void setup_gpio()
 {
+    printf ("--- Setup GPIO\n");
     gpio_mem_map();    
     gpio_set_dir(GPIO_DIR_IN, ADC_ALARM_GPIO_IN);
 
 }
 
-void setup_adc(){
+void setup_adc()
+{
     uint32_t regval;
-    //char rx_buf[10];
-    printf ("Setup ADC\n");
+
+    printf ("--- Setup ADC Port\n");
     // Reset ADC
+    printf ("---- Reset ADC chip\n");
     adc7380_write_reg(AD7380_REG_CONFIG2, 0x00FF);          // Hard reset
     sleep(1);                                               // Wait 10ms
-    adc7380_write_reg(AD7380_REG_CONFIG2, 0x0000);          // 2-wire output mode
-    regval = adc7380_read_reg(AD7380_REG_CONFIG2);  //, rx_buf);
-    printf ("Configuration 2 Reg = 0x%02X%02X\n" ,RxData[0], RxData[1]);
+
+    printf ("---- Set Config 2 Reg\n");
+    adc7380_write_reg(AD7380_REG_CONFIG2, 0x0000);          // 2-wire output mode    
+    //regval = adc7380_read_reg(AD7380_REG_CONFIG2);  //, rx_buf);    
+    //printf ("Configuration 2 Reg = 0x%02X%02X\n" ,RxData[0], RxData[1]);
     
     // --- Set Alert function --- //    
+    printf ("---- Set Alert High Threshold\n");
     // Set Alert threshold, Threshold (Vth), set register value = ((Vth * 65536 / (2 * Vref)) >> 4)
     regval = ((uint32_t)((V_TRIGGER_THRESHOLD * 65536) / (2 * V_REF))) >> 4;
-    printf ("Calaulated threshold value = 0x%04X\n",regval);
     adc7380_write_reg(AD7380_REG_ALERT_HIGH_THRESHOLD, regval);         // Set alert to about 2.5V
-    regval = adc7380_read_reg(AD7380_REG_ALERT_HIGH_THRESHOLD);         //, rx_buf);
-    printf ("Alert High Reg = 0x%02X%02X\n" ,RxData[0], RxData[1]);
+    //regval = adc7380_read_reg(AD7380_REG_ALERT_HIGH_THRESHOLD);         //, rx_buf);
+    //printf ("Alert High Reg = 0x%02X%02X\n" ,RxData[0], RxData[1]);
+    printf("----- Trigger Point = %.2f V, [Reg HEX value : 0x%04X\n",V_TRIGGER_THRESHOLD, regval);
 
     // Enable Alert function
+    printf ("---- Set Config 1 Reg\n");
     adc7380_write_reg(AD7380_REG_CONFIG1, 0x0008);         // Enable alert function
-    regval = adc7380_read_reg(AD7380_REG_CONFIG1);  //, rx_buf);
-    printf ("Configuration 1 Reg = 0x%02X%02X\n" ,RxData[0], RxData[1]);
+    //regval = adc7380_read_reg(AD7380_REG_CONFIG1);  //, rx_buf);
+    //printf ("Configuration 1 Reg = 0x%02X%02X\n" ,RxData[0], RxData[1]);
 }
 
 void setup_spi(){
     int retval;
-    printf ("Setup SPI Port\n");
+    printf ("--- Setup SPI Port\n");
     retval = spi_open(&spi_fd);
     
     spi.tx_buf = (unsigned long)TxData;		//transmit from "data"

@@ -2,15 +2,21 @@
 #include <stdint.h>
 #include <string.h>
 #include "cbuf.h"
+#include "setting.h"
 
+sample_t *head;
+sample_t buff[SAMPLE_COUNT];
 
-BUFF_TYPE *head;
-BUFF_TYPE buff[BUFF_SIZE];
-
-void test(){
-    BUFF_TYPE i;
-    i = 10;
-    printf("%d\n", i);
+void cbuf_test()
+{
+    sample_t *pbuf;
+    pbuf = buff;
+    printf("pbuf = 0x%X\n", pbuf);
+    printf("pbuf = 0x%X\n", pbuf+1);
+    printf("pbuf = 0x%X\n", pbuf+2);
+    printf("sizeof(head) = %d\n",sizeof(head));
+    printf("sizeof(pbuf) = %d\n",sizeof(pbuf));
+    printf("sizeof(sample_t) = %d\n",sizeof(sample_t));
 }
 
 void cbuf_set_pos(int pos){
@@ -21,19 +27,28 @@ void cbuf_set_pos(int pos){
     }
 }
 
-void cbuf_init(){
-    head = buff;
-    memset (buff, 0, BUFF_SIZE);
+int cbuf_get_pos(){
+    return head - buff;
 }
 
-void cbuf_add(BUFF_TYPE data){
-    *head = data;
+void cbuf_init(){
+    head = buff;
+    memset (buff, 0, sizeof(buff));
+}
+
+void cbuf_add(uint32_t time, uint16_t ch1, uint16_t ch3)
+{
+    
+    head->timestamp = time;
+    head->ch1 = ch1;
+    head->ch3 = ch3;
     
     head++;
-    if(head == buff + BUFF_SIZE){
+    if(head == buff + SAMPLE_COUNT){
         head = buff;
     }
 }
+
 
 void cbuf_print_all(){
     int i;
@@ -46,26 +61,24 @@ void cbuf_print_last(){
     printf("%d\n",*(head-1));
 }
 
-void cbuf_copy(BUFF_TYPE *dest, unsigned long start_pos){
-    uint32_t count = 0;
-    uint32_t pos;
+void cbuf_copy(char *dest, unsigned long start_pos)
+{
 
+    sample_t *start_addr;
     uint32_t no_of_bytes_1;
     uint32_t no_of_bytes_2;
 
-    BUFF_TYPE *start_addr;
-
     start_addr = buff + start_pos;
-    no_of_bytes_1 = BUFF_SIZE - start_pos;
-    no_of_bytes_2 = BUFF_SIZE - no_of_bytes_1;
+    no_of_bytes_1 = SAMPLE_COUNT - start_pos;
+    no_of_bytes_2 = SAMPLE_COUNT - no_of_bytes_1;
 
-    printf("no_of_byte_1 = %lu, no_of_byte_2 = %lu\n", no_of_bytes_1, no_of_bytes_2);
-    printf("Start Pos = %d\n", start_pos);
-
-    memcpy(dest, start_addr, no_of_bytes_1 * sizeof(BUFF_TYPE));
-    memcpy(dest + no_of_bytes_1, buff , no_of_bytes_2 * sizeof(BUFF_TYPE));
+    printf("----- Start Pos = %d\n", start_pos);
+    printf("----- no_of_byte_1 = %lu, no_of_byte_2 = %lu\n", no_of_bytes_1, no_of_bytes_2);
     
+    memcpy(dest, start_addr, no_of_bytes_1 * sizeof(sample_t));
+    memcpy(dest + (no_of_bytes_1 * sizeof(sample_t)), buff , no_of_bytes_2 * sizeof(sample_t));
 }
+
 
 unsigned long cbuf_getpos(){
     return head - buff;

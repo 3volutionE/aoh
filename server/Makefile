@@ -1,2 +1,2 @@
 all:
-	gcc gpio.c cbuf.c spi.c socket.c aoh.c -lpthread -o aoh
+	gcc gpio.c cbuf.c spi.c socket.c aoh.c -lpthread -o adc_inf

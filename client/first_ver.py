@@ -74,7 +74,7 @@ def main():
     print ("Configuration 2 Reg = 0x%04X" % (regval))
 
     i = 0
-    t2 = 0;
+    t2 = 0
     
     while i < 10 :
         t1 = time.perf_counter_ns()

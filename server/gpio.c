@@ -96,8 +96,8 @@ void gpio_mem_map()
 
    // Always use volatile pointer!
    gpio = (volatile unsigned *)gpio_map;
-    int reg_val = *(gpio+0xe4); 
-    printf("REg val = 0x%04X\n",reg_val);
+   int reg_val = *(gpio+0xe4); 
+   //printf("REg val = 0x%04X\n",reg_val);
 
 } 
 
